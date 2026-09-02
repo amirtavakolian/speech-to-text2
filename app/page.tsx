@@ -28,6 +28,7 @@ export default function Home() {
   const [transcript, setTranscript] = useState("");
   const [error, setError] = useState("");
   const [partialMsg, setPartialMsg] = useState("");
+  const [copied, setCopied] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<"untested" | "testing" | "valid" | "invalid">("untested");
 
@@ -195,6 +196,17 @@ export default function Home() {
     }
   };
 
+  const copyTranscript = async () => {
+    if (!transcript) return;
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500); // transient ✓ — no permanent state
+    } catch {
+      setError("Could not copy — select the transcript and copy manually.");
+    }
+  };
+
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
 
   return (
@@ -282,7 +294,17 @@ export default function Home() {
       </section>
 
       <section className="panel">
-        <label>Transcript</label>
+        <div className="transcript-head">
+          <label style={{ margin: 0 }}>Transcript</label>
+          <div className="transcript-actions">
+            <button className="ghost" onClick={copyTranscript} disabled={!transcript}>
+              {copied ? "✓ Copied" : "Copy"}
+            </button>
+            <button className="ghost" onClick={() => setTranscript("")} disabled={!transcript}>
+              Clear
+            </button>
+          </div>
+        </div>
         {partialMsg && (
           <p className="status" role="status" aria-live="polite">
             <span className="spinner" aria-hidden="true" /> {partialMsg}

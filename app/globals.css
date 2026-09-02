@@ -146,6 +146,33 @@ button.stop {
   min-height: 24px;
 }
 
+.transcript-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.transcript-actions {
+  display: flex;
+  gap: 6px;
+}
+
+button.ghost {
+  width: auto;
+  padding: 6px 12px;
+  font-size: 13px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+button.ghost:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+  filter: none;
+}
+
 .spinner {
   display: inline-block;
   width: 14px;
