@@ -16,8 +16,27 @@ const LANGUAGES = [
   "Hindi (हिन्दी)",
   "Hebrew (עברית)",
 ];
+// recognition language tags for the browser engine (Gemini gets the display name in its prompt)
+const LANG_TAGS: Record<string, string> = {
+  English: "en-US",
+  "Persian (فارسی)": "fa-IR",
+  "Arabic (العربية)": "ar-SA",
+  "Turkish (Türkçe)": "tr-TR",
+  "Spanish (Español)": "es-ES",
+  "French (Français)": "fr-FR",
+  "German (Deutsch)": "de-DE",
+  "Russian (Русский)": "ru-RU",
+  "Chinese (中文)": "zh-CN",
+  "Japanese (日本語)": "ja-JP",
+  "Hindi (हिन्दी)": "hi-IN",
+  "Hebrew (עברית)": "he-IL",
+};
+const getSpeechRecognition = (): any =>
+  typeof window !== "undefined" &&
+  ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
 type Phase = "idle" | "recording" | "transcribing";
+type Engine = "gemini" | "browser";
 
 export default function Home() {
   const [mics, setMics] = useState<MicDevice[]>([]);
@@ -32,6 +51,11 @@ export default function Home() {
   const [retryable, setRetryable] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<"untested" | "testing" | "valid" | "invalid">("untested");
+  const [engine, setEngine] = useState<Engine>("gemini"); // set to browser in an effect to avoid SSR hydration mismatch
+  // default to the free browser engine where it exists
+  useEffect(() => {
+    if (getSpeechRecognition()) setEngine("browser");
+  }, []);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -39,6 +63,9 @@ export default function Home() {
   const sentSecondsRef = useRef(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
   const lastAudioRef = useRef<string>(""); // unsent-segment WAV from the last send, for retry
+  const recognitionRef = useRef<any>(null);
+  const finalTextRef = useRef(""); // browser engine: committed text, kept separate from in-flight partial
+  const phaseRef = useRef<Phase>("idle"); // phase mirror — recognition callbacks capture stale state
 
   const enableMics = useCallback(async () => {
     setError("");
@@ -158,7 +185,7 @@ export default function Home() {
       timerRef.current = setInterval(() => {
         ticks++;
         setElapsed(ticks);
-        if (ticks % 30 === 0) void sendSegment();
+        if (engine === "gemini" && ticks % 30 === 0) void sendSegment();
       }, 1000);
     } else if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -167,9 +194,54 @@ export default function Home() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [phase, sendSegment]);
+  }, [phase, sendSegment, engine]);
+
+  const startBrowserRecording = () => {
+    setError("");
+    setTranscript("");
+    setRetryable(false);
+    finalTextRef.current = "";
+    const Recognition = getSpeechRecognition();
+    if (!Recognition) {
+      setError("This browser has no built-in speech recognition — use Chrome/Edge or the Gemini engine.");
+      return;
+    }
+    const rec = new Recognition();
+    rec.lang = LANG_TAGS[language] ?? "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (e: any) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) finalTextRef.current += r[0].transcript + " ";
+        else interim += r[0].transcript;
+      }
+      setTranscript((finalTextRef.current + interim).trim());
+    };
+    rec.onerror = (e: any) => {
+      if (e.error === "not-allowed") setError("Microphone permission denied — allow mic access and try again.");
+      else if (e.error !== "aborted") setError(`Speech recognition error: ${e.error}`);
+    };
+    // Chrome auto-stops after silence — restart to keep a long recording alive
+    rec.onend = () => {
+      if (recognitionRef.current && phaseRef.current === "recording") rec.start();
+    };
+    rec.start();
+    recognitionRef.current = rec;
+    setElapsed(0);
+    setPhase("recording");
+  };
+
+  const stopBrowserRecording = () => {
+    const rec = recognitionRef.current;
+    recognitionRef.current = null;
+    rec?.stop();
+    setPhase("idle");
+  };
 
   const startRecording = async () => {
+    if (engine === "browser") return startBrowserRecording();
     setError("");
     setTranscript("");
     setPartialMsg("");
@@ -203,6 +275,7 @@ export default function Home() {
   };
 
   const stopRecording = () => {
+    if (engine === "browser") return stopBrowserRecording();
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
@@ -244,12 +317,24 @@ export default function Home() {
   };
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+  phaseRef.current = phase; // keep the mirror current for recognition callbacks
 
   return (
     <main className="container">
       <h1>Speech Transcriber</h1>
 
       <section className="panel">
+        <label htmlFor="engine">Engine</label>
+        <select
+          id="engine"
+          value={engine}
+          onChange={(e) => setEngine(e.target.value as Engine)}
+          disabled={phase !== "idle"}
+        >
+          <option value="browser">Browser (free, live, Chrome/Edge — same language out)</option>
+          <option value="gemini">Gemini (API key, translates to any language)</option>
+        </select>
+
         <label htmlFor="apikey">Gemini API key</label>
         <div className="keyrow">
           <input
@@ -303,13 +388,13 @@ export default function Home() {
 
             {phase === "recording" ? (
               <button className="stop" onClick={stopRecording}>
-                ■ Stop & transcribe ({mmss})
+                {engine === "browser" ? "■ Stop" : `■ Stop & transcribe (${mmss})`}
               </button>
             ) : (
               <button
                 onClick={startRecording}
-                disabled={phase === "transcribing" || keyStatus !== "valid"}
-                title={keyStatus !== "valid" ? "Test your API key first" : undefined}
+                disabled={phase === "transcribing" || (engine === "gemini" && keyStatus !== "valid")}
+                title={engine === "gemini" && keyStatus !== "valid" ? "Test your API key first" : undefined}
               >
                 {phase === "transcribing" ? (
                   <>
@@ -341,7 +426,14 @@ export default function Home() {
             <button className="ghost" onClick={copyTranscript} disabled={!transcript}>
               {copied ? "✓ Copied" : "Copy"}
             </button>
-            <button className="ghost" onClick={() => setTranscript("")} disabled={!transcript}>
+            <button
+              className="ghost"
+              onClick={() => {
+                if (phase === "recording" && engine === "browser") finalTextRef.current = ""; // keep live session, drop committed text
+                else setTranscript("");
+              }}
+              disabled={!transcript}
+            >
               Clear
             </button>
           </div>
