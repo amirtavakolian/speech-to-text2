@@ -1,0 +1,21 @@
+# dependencies / build
+node_modules
+.next
+out
+*.tsbuildinfo
+next-env.d.ts
+
+# environment — never commit real keys
+.env
+.env.local
+.env*.local
+
+# local tool config (machine-specific, not part of the app)
+.claude/settings.local.json
+.claude/skills
+.agents
+skills-lock.json
+
+# OS junk
+.DS_Store
+Thumbs.db
