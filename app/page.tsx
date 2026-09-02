@@ -29,6 +29,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [partialMsg, setPartialMsg] = useState("");
   const [copied, setCopied] = useState(false);
+  const [retryable, setRetryable] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [keyStatus, setKeyStatus] = useState<"untested" | "testing" | "valid" | "invalid">("untested");
 
@@ -37,6 +38,7 @@ export default function Home() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sentSecondsRef = useRef(0);
   const chainRef = useRef<Promise<void>>(Promise.resolve());
+  const lastAudioRef = useRef<string>(""); // unsent-segment WAV from the last send, for retry
 
   const enableMics = useCallback(async () => {
     setError("");
@@ -106,16 +108,18 @@ export default function Home() {
       const blob = new Blob(chunksRef.current, { type: recorderRef.current?.mimeType });
       if (blob.size === 0) return;
       const run = async () => {
+        const from = sentSecondsRef.current;
         if (opts?.final) {
           setPhase("transcribing");
           setPartialMsg("");
         } else {
-          const from = Math.round(sentSecondsRef.current);
           setPartialMsg(from === 0 ? "First 30s transcribing…" : `Transcribing ${from}–${from + 30}s…`);
         }
+        let b64 = "";
         try {
-          const { base64, duration } = await blobToWavBase64(blob, sentSecondsRef.current);
-          if (duration - sentSecondsRef.current < 0.5) return; // nothing new to send
+          const { base64, duration } = await blobToWavBase64(blob, from);
+          if (duration - from < 0.5) return; // nothing new to send
+          b64 = base64;
           sentSecondsRef.current = duration;
           const res = await fetch("/api/transcribe", {
             method: "POST",
@@ -125,10 +129,16 @@ export default function Home() {
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
           setTranscript((t) => (t ? `${t} ${data.transcript}` : data.transcript));
+          if (opts?.final) chunksRef.current = []; // transcription done — raw audio freed
         } catch (e) {
+          sentSecondsRef.current = from; // roll back — the next send re-includes this span
           const message = e instanceof Error ? e.message : "Transcription failed.";
-          if (opts?.final) setError(message);
-          // partials fail silent — the final send retries the same audio
+          if (opts?.final) {
+            lastAudioRef.current = b64;
+            setRetryable(Boolean(b64)); // no Retry button if even the WAV encode failed
+            setError(message);
+          }
+          // partials fail silent — rollback makes the next 30s send self-heal them
         } finally {
           if (!opts?.final) setPartialMsg("");
           if (opts?.final) setPhase("idle");
@@ -163,6 +173,8 @@ export default function Home() {
     setError("");
     setTranscript("");
     setPartialMsg("");
+    setRetryable(false);
+    lastAudioRef.current = "";
     try {
       const stream = await openMic(micId);
       const recorder = new MediaRecorder(stream);
@@ -193,6 +205,30 @@ export default function Home() {
   const stopRecording = () => {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
+    }
+  };
+
+  const retryTranscribe = async () => {
+    if (!lastAudioRef.current) return;
+    setError("");
+    setRetryable(false);
+    setPhase("transcribing");
+    try {
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioBase64: lastAudioRef.current, apiKey, language }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      setTranscript((t) => (t ? `${t} ${data.transcript}` : data.transcript));
+      lastAudioRef.current = ""; // success — audio freed
+      chunksRef.current = [];
+    } catch (e) {
+      setRetryable(true);
+      setError(e instanceof Error ? e.message : "Transcription failed.");
+    } finally {
+      setPhase("idle");
     }
   };
 
@@ -290,6 +326,11 @@ export default function Home() {
           <p className="status error" role="alert">
             {error}
           </p>
+        )}
+        {retryable && (
+          <button className="retry" onClick={retryTranscribe}>
+            ↻ Retry transcription
+          </button>
         )}
       </section>
 

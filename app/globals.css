@@ -124,6 +124,13 @@ button.stop {
   color: #fff;
 }
 
+button.retry {
+  width: auto;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
 .status {
   text-align: center;
   font-size: 13px;
